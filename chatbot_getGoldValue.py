@@ -1,4 +1,10 @@
+import os
 import json
+import urllib3
+import requests
+import httpx
+from openai import AzureOpenAI
+
 proxies = None
 if os.path.exists("proxy_config.json"):
     with open("proxy_config.json", encoding="utf-8") as pf:
@@ -50,7 +56,8 @@ def get_gold_value(type_of_gold: str) -> str:
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, proxies=proxies, timeout=10, verify=False, headers=headers)
         response.raise_for_status()
-        #print("Raw API response:", response.text)
+        # In ra phản hồi thô từ API (nếu cần debug)
+        #print("Phản hồi thô từ API:", response.text)
         data = response.json()
         buy = data.get('buy')
         sell = data.get('sell')
@@ -67,6 +74,7 @@ def get_gold_value(type_of_gold: str) -> str:
 ### Hàm lấy giá bạc từ MetalPriceAPI
 def get_silver_value(currency_code: str) -> str:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # Lấy giá bạc từ API MetalPriceAPI cho mã tiền tệ
     url = f"https://api.metalpriceapi.com/v1/latest?api_key=d788a657670523b64ab821e986094ccc&base=XAG&currencies={currency_code}"
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -80,17 +88,15 @@ def get_silver_value(currency_code: str) -> str:
         return f"Giá bạc (XAG): {price} {currency_code}/oz"
     except Exception as e:
         return f"Lỗi khi lấy giá bạc cho đơn vị tiền tệ '{currency_code}': {e}"
-import os
-import urllib3
-import requests
-import httpx
-from openai import AzureOpenAI
 
 if __name__ == "__main__":
-    print("Chatbot giá vàng Việt Nam (OpenAI Function Calling). Hãy hỏi về giá vàng hôm nay!")
+    # In thông báo khởi động chatbot
+    print("Chatbot giá vàng Việt Nam (Azure OpenAI Function Calling). Hãy hỏi về giá vàng hoặc bạc hôm nay!")
+    # Khởi tạo danh sách tin nhắn cho hội thoại
     messages = [
-        {"role": "system", "content": "Bạn là một trợ lý AI chuyên về giá vàng Việt Nam."}
+        {"role": "system", "content": "Bạn là một trợ lý AI chuyên về giá vàng và bạc Việt Nam."}
     ]
+    # Định nghĩa các hàm để AI có thể gọi
     function_definitions = [
         {
             "name": "get_gold_value",
@@ -105,61 +111,64 @@ if __name__ == "__main__":
                 },
                 "required": ["type_of_gold"]
             }
+        },
+        {
+            "name": "get_silver_value",
+            "description": "Trả về giá bạc cho mã tiền tệ quốc gia.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "currency_code": {
+                        "type": "string",
+                        "description": "Mã tiền tệ ISO 4217 (ví dụ: VND, USD, EUR, JPY, XAG)"
+                    }
+                },
+                "required": ["currency_code"]
+            }
         }
     ]
     while True:
+        # Nhận đầu vào từ người dùng
         user_input = input("Bạn: ")
         if user_input.lower() in ["exit", "quit", "bye"]:
             print("Chatbot: Tạm biệt!")
             break
+        # Thêm tin nhắn người dùng vào hội thoại
         messages.append({"role": "user", "content": user_input})
 
-        # Dùng AI để xác định nhu cầu người dùng là hỏi giá vàng hay bạc
-        intent_prompt = (
-            "Người dùng đang hỏi về giá vàng hay giá bạc? Trả về 'gold' hoặc 'silver', không giải thích.\n"
-            f"Yêu cầu: {user_input}"
-        )
-        intent_response = client.chat.completions.create(
+        # Gửi hội thoại và hàm cho AI xử lý
+        response = client.chat.completions.create(
             model="GPT-4.1-mini",
-            messages=[{"role": "user", "content": intent_prompt}],
-            max_tokens=6
+            messages=messages,
+            functions=function_definitions,
+            function_call="auto",
+            max_tokens=256
         )
-        intent = intent_response.choices[0].message.content.strip().lower()
+        choice = response.choices[0]
+        message = choice.message
 
-        if intent == "silver":
-            # Dùng AI để lấy mã tiền tệ quốc gia từ yêu cầu người dùng
-            currency_prompt = (
-                "Hãy trả về mã tiền tệ quốc gia phù hợp nhất với yêu cầu người dùng. "
-                "Chỉ trả về mã tiền tệ ISO 4217, không giải thích.\n"
-                f"Yêu cầu: {user_input}"
-            )
-            currency_response = client.chat.completions.create(
-                model="GPT-4.1-mini",
-                messages=[{"role": "user", "content": currency_prompt}],
-                max_tokens=10
-            )
-            currency_code = currency_response.choices[0].message.content.strip().split()[0]
-            result = get_silver_value(currency_code)
-            print(f"Chatbot: {result}")
-        elif intent == "gold":
-            # Dùng AI để lấy mã loại vàng từ yêu cầu người dùng
-            mapping_prompt = (
-                "Dưới đây là các mã loại vàng và mô tả. Hãy trả về mã phù hợp nhất với yêu cầu người dùng. "
-                "Chỉ trả về mã, không giải thích.\n" +
-                "\n".join([f"{code}: {desc}" for code, desc in code_map.items()]) +
-                f"\n\nYêu cầu: {user_input}"
-            )
-            mapping_response = client.chat.completions.create(
-                model="GPT-4.1-mini",
-                messages=[{"role": "user", "content": mapping_prompt}],
-                max_tokens=20
-            )
-            mapped_code = mapping_response.choices[0].message.content.strip().split()[0]
-            # Kiểm tra mã vàng trước khi gọi hàm lấy giá
-            if mapped_code not in code_map:
-                print(f"Chatbot: Mã vàng '{mapped_code}' không được hỗ trợ.")
+        # Kiểm tra xem AI có muốn gọi hàm không
+        if hasattr(message, "function_call") and message.function_call:
+            func_name = message.function_call.name
+            func_args = json.loads(message.function_call.arguments)
+            if func_name == "get_gold_value":
+                type_of_gold = func_args.get("type_of_gold", "")
+                if type_of_gold not in code_map:
+                    result = f"Mã vàng '{type_of_gold}' không được hỗ trợ."
+                else:
+                    result = get_gold_value(type_of_gold)
+            elif func_name == "get_silver_value":
+                currency_code = func_args.get("currency_code", "")
+                result = get_silver_value(currency_code)
             else:
-                result = get_gold_value(mapped_code)
-                print(f"Chatbot: {result}")
+                result = "Chức năng không được hỗ trợ."
+            # Thêm kết quả hàm vào hội thoại và in ra cho người dùng
+            messages.append({
+                "role": "function",
+                "name": func_name,
+                "content": result
+            })
+            print(f"Chatbot: {result}")
         else:
-            print("Chatbot: Xin lỗi, tôi chỉ hỗ trợ tra cứu giá vàng hoặc bạc.")
+            # Nếu AI không gọi hàm, in ra phản hồi của AI
+            print(f"Chatbot: {message.content}")
